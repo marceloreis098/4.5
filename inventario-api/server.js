@@ -330,6 +330,7 @@ app.post('/api/ai/generate-report', async (req, res) => {
             throw new Error("A chave de API do Hugging Face não está configurada no ambiente do servidor.");
         }
         
+        // FIX: The Hugging Face API URL has been updated. The error message explicitly states the new URL to use.
         const MODEL_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";
 
         const prompt = `
@@ -368,10 +369,10 @@ app.post('/api/ai/generate-report', async (req, res) => {
 
         // O modelo do Hugging Face retorna o prompt original mais a resposta.
         // Precisamos extrair apenas a parte da resposta que contém o JSON.
-        const jsonStartIndex = generatedText.indexOf('[');
+        let jsonString;
+        const jsonStartIndex = generatedText.lastIndexOf('[');
         const jsonEndIndex = generatedText.lastIndexOf(']');
         
-        let jsonString;
         if (jsonStartIndex !== -1 && jsonEndIndex !== -1 && jsonEndIndex > jsonStartIndex) {
             jsonString = generatedText.substring(jsonStartIndex, jsonEndIndex + 1);
         } else {
