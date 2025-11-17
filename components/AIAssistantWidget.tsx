@@ -54,27 +54,7 @@ const AIAssistantWidget: React.FC<{ currentUser: User }> = ({ currentUser }) => 
             const result = await generateAiReport(query, inventoryData, currentUser.username);
 
             if (result.error) {
-                let friendlyError: React.ReactNode = "Ocorreu um erro inesperado no servidor. Tente novamente mais tarde.";
-                if (result.error.includes("Cannot find module '@google/genai'")) {
-                    friendlyError = "Erro de configuração no servidor: a biblioteca de IA não foi encontrada. Verifique a instalação da API (execute 'npm install' na pasta 'inventario-api').";
-                } else if (result.error.includes("API key not valid")) {
-                    friendlyError = "A chave da API do Gemini não é válida. Por favor, verifique a configuração no painel do administrador.";
-                } else if (result.error.includes("billing")) {
-                    friendlyError = (
-                        <>
-                            Problema de faturamento com a API do Gemini.{" "}
-                            <a 
-                                href="https://console.cloud.google.com/billing" 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="font-bold underline hover:text-red-800"
-                            >
-                                Verifique sua conta Google Cloud.
-                            </a>
-                        </>
-                    );
-                }
-                setError(friendlyError);
+                setError(result.error);
             } else if (result.reportData) {
                 setReport(result.reportData);
             } else {

@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { GoogleGenAI } = require('@google/genai');
+const fetch = require('node-fetch');
 
 
 const app = express();
@@ -325,22 +325,20 @@ app.post('/api/ai/generate-report', async (req, res) => {
     logAction(username, 'AI_REPORT', 'EQUIPMENT', null, `Generated AI report with query: "${query}"`);
 
     try {
-        const apiKey = process.env.API_KEY;
-        if (!apiKey) {
-            throw new Error("A chave de API do Gemini não está configurada no ambiente do servidor.");
+        const hfApiKey = process.env.HUGGING_FACE_API_KEY;
+        if (!hfApiKey) {
+            throw new Error("A chave de API do Hugging Face não está configurada no ambiente do servidor.");
         }
-        const ai = new GoogleGenAI({ apiKey });
-        const model = 'gemini-2.5-flash';
         
+        const MODEL_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";
+
         const prompt = `
             Você é um assistente de IA especialista em análise de dados de inventário.
-            Sua tarefa é filtrar uma lista de itens com base na solicitação do usuário e retornar os itens correspondentes.
-            A data atual é ${new Date().toISOString().split('T')[0]}. Use esta data para cálculos de tempo se necessário.
-            Analise a solicitação do usuário e os dados JSON do inventário fornecidos.
-            Os nomes dos campos no JSON são: id, equipamento, garantia, patrimonio, serial, usuarioAtual, usuarioAnterior, local, setor, dataEntregaUsuario, status, dataDevolucao, tipo, notaCompra, notaPlKm, termoResponsabilidade, foto, qrCode.
-            Retorne APENAS um array JSON contendo os objetos de equipamento que correspondem à solicitação.
-            O array JSON de saída deve ser um subconjunto do array de entrada. Não altere a estrutura dos objetos.
-            Se nenhum equipamento corresponder, retorne um array JSON vazio.
+            Sua tarefa é filtrar uma lista de itens com base na solicitação do usuário e retornar APENAS um array JSON contendo os itens correspondentes.
+            A data atual é ${new Date().toISOString().split('T')[0]}.
+            Os campos disponíveis são: id, equipamento, garantia, patrimonio, serial, usuarioAtual, usuarioAnterior, local, setor, dataEntregaUsuario, status, dataDevolucao, tipo, notaCompra, notaPlKm, termoResponsabilidade, foto, qrCode.
+            Retorne SOMENTE o array JSON. Não inclua nenhuma explicação, introdução, ou texto antes ou depois do array. A resposta deve ser diretamente o array.
+            Se nenhum item corresponder, retorne um array JSON vazio: [].
 
             Solicitação do usuário: "${query}"
 
@@ -348,30 +346,61 @@ app.post('/api/ai/generate-report', async (req, res) => {
             ${JSON.stringify(data, null, 2)}
         `;
 
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-            }
+        const hfResponse = await fetch(MODEL_URL, {
+            headers: {
+                "Authorization": `Bearer ${hfApiKey}`,
+                "Content-Type": "application/json"
+            },
+            method: "POST",
+            body: JSON.stringify({ 
+                "inputs": prompt,
+                "parameters": { "max_new_tokens": 4096 } // Aumentar o limite para respostas maiores
+            }),
         });
         
-        const jsonText = response.text;
-        const cleanedJsonText = jsonText.trim().replace(/^```json\n?/, '').replace(/\n?```$/, '');
-        const reportData = JSON.parse(cleanedJsonText);
+        if (!hfResponse.ok) {
+            const errorBody = await hfResponse.text();
+            throw new Error(`Hugging Face API error (${hfResponse.status}): ${errorBody}`);
+        }
+        
+        const result = await hfResponse.json();
+        let generatedText = result[0].generated_text;
 
+        // O modelo do Hugging Face retorna o prompt original mais a resposta.
+        // Precisamos extrair apenas a parte da resposta que contém o JSON.
+        const jsonStartIndex = generatedText.indexOf('[');
+        const jsonEndIndex = generatedText.lastIndexOf(']');
+        
+        let jsonString;
+        if (jsonStartIndex !== -1 && jsonEndIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+            jsonString = generatedText.substring(jsonStartIndex, jsonEndIndex + 1);
+        } else {
+             // Fallback para tentar encontrar JSON em qualquer lugar no texto
+            const jsonMatch = generatedText.match(/\[.*\]/s);
+            if(jsonMatch && jsonMatch[0]) {
+                jsonString = jsonMatch[0];
+            } else {
+                console.error("Invalid JSON structure in AI response:", generatedText);
+                throw new Error("A resposta da IA não continha um array JSON válido.");
+            }
+        }
+        
+        // Clean up potential markdown formatting that sometimes wraps the JSON
+        jsonString = jsonString.replace(/```json/g, '').replace(/```/g, '').trim();
+
+        const reportData = JSON.parse(jsonString);
         if (!Array.isArray(reportData)) {
             throw new Error("A resposta da IA não era um array JSON.");
         }
-
+        
         res.json({ reportData });
 
     } catch (error) {
-        console.error("Error calling Gemini API from backend:", error);
+        console.error("Error with Hugging Face API from backend:", error);
         let errorMessage = "Ocorreu um erro ao gerar o relatório com a IA no servidor.";
         if (error.message) {
              if (error.message.includes("API key not valid")) {
-                errorMessage = "A chave de API do Gemini não é válida. Verifique a configuração do ambiente do servidor."
+                errorMessage = "A chave de API do Hugging Face não é válida. Verifique a configuração do ambiente do servidor."
              } else {
                 errorMessage = `${errorMessage} Detalhes: ${error.message}`;
             }

@@ -319,44 +319,39 @@ Caso seja necessário alterar o repositório de onde as atualizações são baix
 Após esses passos, o comando `git pull origin main` passará a buscar atualizações do novo repositório.
 ---
 
-## Configuração da API do Gemini
+## Configuração da API do Hugging Face
 
-Para habilitar as funcionalidades de Inteligência Artificial do sistema, como o assistente de relatórios, é necessário configurar uma chave de API do Google Gemini.
+Para habilitar as funcionalidades de Inteligência Artificial do sistema, como o assistente de relatórios, é necessário configurar uma chave de API do Hugging Face.
 
 ### 1. Obtenha sua Chave de API
 
-1.  Acesse o **Google AI Studio**: [https://aistudio.google.com/](https://aistudio.google.com/)
-2.  Faça login com sua conta Google.
-3.  No menu à esquerda, clique em **"Get API key"** e depois em **"Create API key"**.
-4.  Copie a chave de API gerada.
+1.  Crie uma conta em [https://huggingface.co/](https://huggingface.co/).
+2.  No seu perfil, vá para "Settings" -> "Access Tokens".
+3.  Crie um novo token com permissão "read".
+4.  Copie o token gerado.
 
 ### 2. Adicione a Chave ao Backend
-
-A chave deve ser adicionada como uma variável de ambiente no servidor para garantir a segurança.
 
 1.  Navegue até a pasta da API:
     ```bash
     cd /var/www/Inventario/inventario-api
     ```
 
-2.  Abra o arquivo `.env` para edição:
+2.  Abra ou crie o arquivo `.env`:
     ```bash
     nano .env
     ```
 
-3.  Adicione a seguinte linha ao final do arquivo, substituindo `sua-chave-api-do-gemini-aqui` pela chave que você copiou:
+3.  Adicione a seguinte linha, substituindo `seu-token-do-huggingface` pelo token que você copiou:
     ```env
     # ... (outras variáveis existentes)
-    API_KEY=sua-chave-api-do-gemini-aqui
+    HUGGING_FACE_API_KEY=seu-token-do-huggingface
     ```
 
 ### 3. Reinicie a API
 
-Para que a nova variável de ambiente seja carregada, reinicie o processo da API usando o PM2:
+Para que a nova variável de ambiente seja carregada, reinicie o processo da API:
 
 ```bash
-# Estando na pasta /var/www/Inventario/inventario-api
 npx pm2 restart inventario-api
 ```
-
-Após esses passos, a integração com o Gemini estará ativa.
