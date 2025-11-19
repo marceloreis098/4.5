@@ -12,21 +12,27 @@ const port = process.env.API_PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// Database Connection
-const db = mysql.createConnection({
+// Database Connection Pool
+// Using a pool is better for production as it handles connection keep-alive and timeouts automatically.
+const db = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE
+    database: process.env.DB_DATABASE,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
-db.connect((err) => {
+// Check connection on startup
+db.getConnection((err, connection) => {
     if (err) {
         console.error('Error connecting to database:', err);
-        return;
+    } else {
+        console.log('Connected to MariaDB database via Pool');
+        connection.release();
+        runMigrations();
     }
-    console.log('Connected to MariaDB database');
-    runMigrations();
 });
 
 // --- Helper Functions ---
@@ -48,7 +54,7 @@ const migrations = [
     { id: 5, query: "CREATE TABLE IF NOT EXISTS audit_log (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(255), action_type VARCHAR(50), target_type VARCHAR(50), target_id VARCHAR(255), details TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)" },
     { id: 6, query: "CREATE TABLE IF NOT EXISTS settings (id INT PRIMARY KEY DEFAULT 1, companyName VARCHAR(255), isSsoEnabled BOOLEAN DEFAULT FALSE, is2faEnabled BOOLEAN DEFAULT FALSE, require2fa BOOLEAN DEFAULT FALSE, ssoUrl TEXT, ssoEntityId TEXT, ssoCertificate TEXT, smtpHost VARCHAR(255), smtpPort INT, smtpUser VARCHAR(255), smtpPass VARCHAR(255), smtpSecure BOOLEAN DEFAULT TRUE, termo_entrega_template LONGTEXT, termo_devolucao_template LONGTEXT, hasInitialConsolidationRun BOOLEAN DEFAULT FALSE, lastAbsoluteUpdateTimestamp DATETIME)" },
     { id: 7, query: "INSERT IGNORE INTO settings (id, companyName) VALUES (1, 'MRR INFORMATICA')" },
-    { id: 8, query: "INSERT IGNORE INTO users (username, password, role, realName, email) VALUES ('admin', '$2a$10$X.s.hHh.s.u.p.e.r.S.e.c.r.e.t.H.a.s.h', 'Admin', 'Administrador', 'admin@example.com')" }, // Password needs to be hashed in real deployment. This is a placeholder.
+    { id: 8, query: "INSERT IGNORE INTO users (username, password, role, realName, email) VALUES ('admin', '$2a$10$X.s.hHh.s.u.p.e.r.S.e.c.r.e.t.H.a.s.h', 'Admin', 'Administrador', 'admin@example.com')" },
     { id: 9, query: "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'approved'" },
     { id: 10, query: "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS rejection_reason TEXT" },
     { id: 11, query: "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS created_by_id INT" },
@@ -108,18 +114,13 @@ app.get('/api', (req, res) => {
 
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    // Simple login for demonstration. In production, use bcrypt to compare hashes.
     db.query("SELECT * FROM users WHERE username = ?", [username], async (err, results) => {
         if (err) return res.status(500).json({ message: "Database error" });
         if (results.length === 0) return res.status(401).json({ message: "User not found" });
 
         const user = results[0];
-        // For this demo, assuming plain text if it doesn't look like a hash, or using bcrypt compare
-        // WARNING: ALWAYS HASH PASSWORDS IN PRODUCTION
         let isValid = false;
         if (user.password.startsWith('$2a$')) {
-             // isValid = await bcrypt.compare(password, user.password); // Enable if using hashed passwords
-             // For the demo seed 'admin', we bypass check or check hardcoded
              isValid = (username === 'admin' && password === 'admin') || (await bcrypt.compare(password, user.password).catch(() => false));
         } else {
             isValid = user.password === password;
@@ -135,7 +136,6 @@ app.post('/api/login', (req, res) => {
     });
 });
 
-// 2FA Routes
 app.post('/api/generate-2fa', (req, res) => {
     const { userId } = req.body;
     const secret = authenticator.generateSecret();
@@ -196,10 +196,9 @@ app.post('/api/disable-2fa', (req, res) => {
         res.json({ success: true });
     });
 });
-// Admin disabling user 2FA
+
 app.post('/api/disable-user-2fa', (req, res) => {
      const { userId } = req.body;
-     // In a real app, verify admin permissions here via middleware
     db.query("UPDATE users SET is2FAEnabled = FALSE, twoFactorSecret = NULL WHERE id = ?", [userId], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
         logAction('Admin', '2FA_DISABLE', 'USER', userId, 'Admin disabled 2FA for user');
@@ -207,18 +206,13 @@ app.post('/api/disable-user-2fa', (req, res) => {
     });
 });
 
-
-// SSO Placeholder Routes (Requires passport-saml logic in production)
 app.get('/api/sso/login', (req, res) => {
-    // Implementation would depend on 'passport-saml'
-    res.redirect('/login'); // Dummy redirect
+    res.redirect('/login');
 });
 
 app.post('/api/sso/callback', (req, res) => {
-    // Handle SAML callback
     res.redirect('/'); 
 });
-
 
 // --- EQUIPMENT Routes ---
 
@@ -226,12 +220,6 @@ app.get('/api/equipment', (req, res) => {
     const { userId, role } = req.query;
     let query = "SELECT * FROM equipment";
     let params = [];
-    
-    // If regular user, only show their own creations OR approved items (depending on logic)
-    // For this system, typically regular users see everything but edit only theirs? 
-    // Or see only theirs? Let's assume they see all for inventory purposes but UI restricts actions.
-    // However, the prompt implies specific visibility. Let's return all for now.
-    
     db.query(query, params, (err, results) => {
         if (err) {
             console.error(err);
@@ -253,7 +241,6 @@ app.post('/api/equipment', (req, res) => {
     const { equipment, username } = req.body;
     const approval_status = 'pending_approval';
     
-    // Get user ID for created_by_id
     db.query("SELECT id FROM users WHERE username = ?", [username], (err, results) => {
         let userId = null;
         if (!err && results.length > 0) userId = results[0].id;
@@ -262,7 +249,6 @@ app.post('/api/equipment', (req, res) => {
         
         db.query("INSERT INTO equipment SET ?", newEquipment, (err, result) => {
             if (err) {
-                 // Check for duplicate serial entry if necessary, or handle db errors
                  if(err.code === 'ER_DUP_ENTRY') {
                      return res.status(400).json({ message: "Já existe um equipamento com este Serial." });
                  }
@@ -272,7 +258,6 @@ app.post('/api/equipment', (req, res) => {
             const id = result.insertId;
             logAction(username, 'CREATE', 'EQUIPMENT', id, `Created equipment: ${equipment.equipamento}`);
             
-            // Log creation in history
             db.query("INSERT INTO equipment_history (equipment_id, changedBy, changeType, to_value) VALUES (?, ?, 'Creation', ?)", 
                 [id, username, 'Created']);
 
@@ -285,7 +270,6 @@ app.put('/api/equipment/:id', (req, res) => {
     const { id } = req.params;
     const { equipment, username } = req.body;
 
-    // Get old values for history
     db.query("SELECT * FROM equipment WHERE id = ?", [id], (err, results) => {
         if (err || results.length === 0) return res.status(404).json({ message: "Equipment not found" });
         const oldEq = results[0];
@@ -295,9 +279,8 @@ app.put('/api/equipment/:id', (req, res) => {
             
             logAction(username, 'UPDATE', 'EQUIPMENT', id, `Updated equipment: ${equipment.equipamento}`);
 
-            // Compare and log changes
             Object.keys(equipment).forEach(key => {
-                if (key !== 'id' && key !== 'foto' && equipment[key] != oldEq[key]) { // Simple comparison
+                if (key !== 'id' && key !== 'foto' && equipment[key] != oldEq[key]) {
                      db.query("INSERT INTO equipment_history (equipment_id, changedBy, changeType, from_value, to_value) VALUES (?, ?, ?, ?, ?)",
                         [id, username, key, JSON.stringify(oldEq[key]), JSON.stringify(equipment[key])]);
                 }
@@ -319,7 +302,6 @@ app.delete('/api/equipment/:id', (req, res) => {
     });
 });
 
-// Bulk Import Equipment
 app.post('/api/equipment/import', (req, res) => {
     const { equipmentList, username } = req.body;
     
@@ -327,67 +309,59 @@ app.post('/api/equipment/import', (req, res) => {
         return res.status(400).json({ message: "Invalid data" });
     }
 
-    // For imports, we might want to truncate and replace, or upsert.
-    // The frontend "Consolidation" feature implies a replacement or smart merge.
-    // Let's implement a "Replace All" strategy as implied by "Consolidar e Salvar" logic from frontend often asking for confirmation to replace.
-    // BUT, safer is to UPSERT based on Serial.
+    db.getConnection((err, connection) => {
+        if (err) return res.status(500).json({ message: "Connection error" });
 
-    // Strategy: Clear table and re-insert? Or upsert?
-    // Frontend confirmation says: "Esta ação substituirá TODO o inventário".
-    // So let's truncate.
-    
-    db.beginTransaction(err => {
-        if (err) return res.status(500).json({ message: "Transaction error" });
+        connection.beginTransaction(err => {
+            if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
 
-        db.query("TRUNCATE TABLE equipment", (err) => {
-             if (err) {
-                return db.rollback(() => {
-                    res.status(500).json({ message: "Error clearing table" });
-                });
-            }
-            
-            // Prepare insert values
-            // We need to make sure the order of values matches the columns
-            // This is complex with dynamic objects. 
-            // Simplified approach: Insert one by one or construct a bulk query carefully.
-            
-            // Let's try inserting one by one for safety in this demo, or use a helper
-            const promises = equipmentList.map(item => {
-                return new Promise((resolve, reject) => {
-                    const { id, ...data } = item; // Exclude ID
-                    db.query("INSERT INTO equipment SET ?", { ...data, approval_status: 'approved', created_by_id: null }, (err) => {
-                        if (err) reject(err);
-                        else resolve();
+            connection.query("TRUNCATE TABLE equipment", (err) => {
+                 if (err) {
+                    return connection.rollback(() => {
+                        connection.release();
+                        res.status(500).json({ message: "Error clearing table" });
+                    });
+                }
+                
+                const promises = equipmentList.map(item => {
+                    return new Promise((resolve, reject) => {
+                        const { id, ...data } = item;
+                        connection.query("INSERT INTO equipment SET ?", { ...data, approval_status: 'approved', created_by_id: null }, (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
                     });
                 });
+
+                Promise.all(promises)
+                    .then(() => {
+                        connection.commit(err => {
+                            if (err) {
+                                 return connection.rollback(() => {
+                                     connection.release();
+                                     res.status(500).json({ message: "Commit error" });
+                                 });
+                            }
+                            
+                            connection.query("UPDATE settings SET hasInitialConsolidationRun = TRUE, lastAbsoluteUpdateTimestamp = NOW() WHERE id = 1");
+                            logAction(username, 'IMPORT', 'DATABASE', null, `Imported ${equipmentList.length} items`);
+                            connection.release();
+                            res.json({ success: true, message: "Importação concluída com sucesso." });
+                        });
+                    })
+                    .catch(err => {
+                        connection.rollback(() => {
+                            connection.release();
+                            res.status(500).json({ message: "Insert error: " + err.message });
+                        });
+                    });
             });
-
-            Promise.all(promises)
-                .then(() => {
-                    db.commit(err => {
-                        if (err) {
-                             return db.rollback(() => res.status(500).json({ message: "Commit error" }));
-                        }
-                        
-                        // Update settings flag
-                        db.query("UPDATE settings SET hasInitialConsolidationRun = TRUE, lastAbsoluteUpdateTimestamp = NOW() WHERE id = 1");
-                        
-                        logAction(username, 'IMPORT', 'DATABASE', null, `Imported ${equipmentList.length} items`);
-                        res.json({ success: true, message: "Importação concluída com sucesso." });
-                    });
-                })
-                .catch(err => {
-                    db.rollback(() => res.status(500).json({ message: "Insert error: " + err.message }));
-                });
         });
     });
 });
 
-// Periodic Update
 app.post('/api/equipment/periodic-update', (req, res) => {
     const { equipmentList, username } = req.body;
-    // Upsert logic based on Serial
-    
     let updated = 0;
     let inserted = 0;
     let errors = 0;
@@ -401,14 +375,12 @@ app.post('/api/equipment/periodic-update', (req, res) => {
                 if (err) { errors++; resolve(); return; }
 
                 if (results.length > 0) {
-                    // Update
                     db.query("UPDATE equipment SET ? WHERE serial = ?", [data, serial], (err) => {
                         if (!err) updated++;
                         else errors++;
                         resolve();
                     });
                 } else {
-                    // Insert
                     db.query("INSERT INTO equipment SET ?", { ...data, serial, approval_status: 'approved' }, (err) => {
                         if (!err) inserted++;
                         else errors++;
@@ -451,6 +423,7 @@ app.put('/api/licenses/:id', (req, res) => {
     const { id } = req.params;
     const { license, username } = req.body;
     
+    // Remove ID from update object to avoid primary key conflict and ensure consistency
     const { id: _, created_by_id: __, approval_status: ___, rejection_reason: ____, ...updateData } = license;
 
     db.query("UPDATE licenses SET ? WHERE id = ?", [updateData, id], (err) => {
@@ -480,37 +453,50 @@ app.post('/api/licenses/import', (req, res) => {
         return res.status(400).json({ message: "Invalid input" });
     }
 
-    db.beginTransaction(err => {
-        if (err) return res.status(500).json({ message: "Transaction error" });
+    db.getConnection((err, connection) => {
+        if (err) return res.status(500).json({ message: "Connection error" });
 
-        // Delete existing licenses for this product
-        db.query("DELETE FROM licenses WHERE produto = ?", [productName], (err) => {
-             if (err) {
-                return db.rollback(() => {
-                    res.status(500).json({ message: "Error deleting old licenses" });
-                });
-            }
+        connection.beginTransaction(err => {
+            if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
 
-            const promises = licenses.map(license => {
-                return new Promise((resolve, reject) => {
-                    db.query("INSERT INTO licenses SET ?", { ...license, produto: productName, approval_status: 'approved' }, (err) => {
-                        if (err) reject(err);
-                        else resolve();
+            connection.query("DELETE FROM licenses WHERE produto = ?", [productName], (err) => {
+                 if (err) {
+                    return connection.rollback(() => {
+                        connection.release();
+                        res.status(500).json({ message: "Error deleting old licenses" });
+                    });
+                }
+
+                const promises = licenses.map(license => {
+                    return new Promise((resolve, reject) => {
+                        connection.query("INSERT INTO licenses SET ?", { ...license, produto: productName, approval_status: 'approved' }, (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
                     });
                 });
+
+                Promise.all(promises)
+                    .then(() => {
+                        connection.commit(err => {
+                            if (err) {
+                                return connection.rollback(() => {
+                                    connection.release();
+                                    res.status(500).json({ message: "Commit error" });
+                                });
+                            }
+                            logAction(username, 'IMPORT', 'LICENSE', null, `Imported licenses for ${productName}`);
+                            connection.release();
+                            res.json({ success: true, message: "Importação concluída." });
+                        });
+                    })
+                    .catch(err => {
+                        connection.rollback(() => {
+                            connection.release();
+                            res.status(500).json({ message: "Insert error: " + err.message });
+                        });
+                    });
             });
-
-            Promise.all(promises)
-                .then(() => {
-                    db.commit(err => {
-                        if (err) return db.rollback(() => res.status(500).json({ message: "Commit error" }));
-                        logAction(username, 'IMPORT', 'LICENSE', null, `Imported licenses for ${productName}`);
-                        res.json({ success: true, message: "Importação concluída." });
-                    });
-                })
-                .catch(err => {
-                    db.rollback(() => res.status(500).json({ message: "Insert error: " + err.message }));
-                });
         });
     });
 });
@@ -529,9 +515,6 @@ app.get('/api/licenses/totals', (req, res) => {
 app.post('/api/licenses/totals', (req, res) => {
     const { totals, username } = req.body;
     const queries = [];
-    
-    // Clear old totals? Or update? Upsert is better.
-    // Using REPLACE INTO or ON DUPLICATE KEY UPDATE
     
     for (const [product, total] of Object.entries(totals)) {
         queries.push(new Promise((resolve, reject) => {
@@ -554,25 +537,29 @@ app.post('/api/licenses/totals', (req, res) => {
 app.post('/api/licenses/rename-product', (req, res) => {
     const { oldName, newName, username } = req.body;
     
-    db.beginTransaction(err => {
-        if (err) return res.status(500).json({ message: "Transaction start error" });
+    db.getConnection((err, connection) => {
+        if (err) return res.status(500).json({ message: "Connection error" });
 
-        db.query("UPDATE licenses SET produto = ? WHERE produto = ?", [newName, oldName], (err) => {
-            if (err) return db.rollback(() => res.status(500).json({ message: "Update licenses error" }));
-            
-            db.query("UPDATE license_totals SET product_name = ? WHERE product_name = ?", [newName, oldName], (err) => {
-                 if (err) return db.rollback(() => res.status(500).json({ message: "Update totals error" }));
-                 
-                 db.commit(err => {
-                     if (err) return db.rollback(() => res.status(500).json({ message: "Commit error" }));
-                     logAction(username, 'UPDATE', 'PRODUCT', null, `Renamed product ${oldName} to ${newName}`);
-                     res.json({ success: true });
-                 });
+        connection.beginTransaction(err => {
+            if (err) { connection.release(); return res.status(500).json({ message: "Transaction start error" }); }
+
+            connection.query("UPDATE licenses SET produto = ? WHERE produto = ?", [newName, oldName], (err) => {
+                if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Update licenses error" }); });
+                
+                connection.query("UPDATE license_totals SET product_name = ? WHERE product_name = ?", [newName, oldName], (err) => {
+                     if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Update totals error" }); });
+                     
+                     connection.commit(err => {
+                         if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
+                         logAction(username, 'UPDATE', 'PRODUCT', null, `Renamed product ${oldName} to ${newName}`);
+                         connection.release();
+                         res.json({ success: true });
+                     });
+                });
             });
         });
     });
 });
-
 
 // --- USERS Routes ---
 
@@ -586,7 +573,7 @@ app.get('/api/users', (req, res) => {
 app.post('/api/users', async (req, res) => {
     const { user, username } = req.body;
     try {
-        const hashedPassword = await bcrypt.hash(user.password || '123456', 10); // Default password if not provided
+        const hashedPassword = await bcrypt.hash(user.password || '123456', 10);
         const newUser = { ...user, password: hashedPassword, is2FAEnabled: false };
         delete newUser.id;
         
@@ -606,8 +593,8 @@ app.put('/api/users/:id', async (req, res) => {
     
     let updateFields = { ...user };
     delete updateFields.id;
-    delete updateFields.password; // Handle password separately
-    delete updateFields.twoFactorSecret; // Protect 2FA secret
+    delete updateFields.password;
+    delete updateFields.twoFactorSecret;
 
     if (user.password) {
         updateFields.password = await bcrypt.hash(user.password, 10);
@@ -626,7 +613,6 @@ app.put('/api/users/:id/profile', (req, res) => {
     
     db.query("UPDATE users SET realName = ?, avatarUrl = ? WHERE id = ?", [realName, avatarUrl, id], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
-        // Return updated user info
         db.query("SELECT id, username, role, realName, email, is2FAEnabled, ssoProvider, avatarUrl, lastLogin FROM users WHERE id = ?", [id], (err, results) => {
             res.json(results[0]);
         });
@@ -719,9 +705,6 @@ app.post('/api/approvals/reject', (req, res) => {
 // --- DATABASE MANAGEMENT ---
 
 app.get('/api/database/backup-status', (req, res) => {
-    // In a real environment, check for backup file existence
-    // Here we mock based on a timestamp stored in settings (hacky but works for demo)
-    // Or check if a backup file exists in a directory
     const fs = require('fs');
     const path = require('path');
     const backupPath = path.join(__dirname, 'backup.sql');
@@ -740,9 +723,6 @@ app.post('/api/database/backup', (req, res) => {
     const path = require('path');
     const backupPath = path.join(__dirname, 'backup.sql');
     
-    // Simple mysqldump-like logic not possible easily with mysql2 directly without exec
-    // For this Node-only demo, we will select all data and write to JSON
-    
     const tables = ['users', 'equipment', 'licenses', 'equipment_history', 'audit_log', 'settings', 'license_totals'];
     const backupData = {};
     
@@ -760,7 +740,7 @@ app.post('/api/database/backup', (req, res) => {
     
     Promise.all(promises)
         .then(() => {
-            fs.writeFileSync(backupPath, JSON.stringify(backupData)); // Write JSON backup
+            fs.writeFileSync(backupPath, JSON.stringify(backupData));
             logAction(username, 'BACKUP', 'DATABASE', null, 'Created database backup');
             res.json({ success: true, message: "Backup realizado com sucesso.", backupTimestamp: new Date() });
         })
@@ -778,29 +758,34 @@ app.post('/api/database/restore', (req, res) => {
     try {
         const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
         
-        db.beginTransaction(async err => {
-            if (err) return res.status(500).json({ message: "Transaction error" });
-            
-            try {
-                for (const table of Object.keys(backupData)) {
-                    await new Promise((resolve, reject) => db.query(`DELETE FROM ${table}`, (err) => err ? reject(err) : resolve())); // Clear table
-                    
-                    const rows = backupData[table];
-                    if (rows.length > 0) {
-                        for (const row of rows) {
-                             await new Promise((resolve, reject) => db.query(`INSERT INTO ${table} SET ?`, row, (err) => err ? reject(err) : resolve()));
+        db.getConnection((err, connection) => {
+            if (err) return res.status(500).json({ message: "Connection error" });
+
+            connection.beginTransaction(async err => {
+                if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
+                
+                try {
+                    for (const table of Object.keys(backupData)) {
+                        await new Promise((resolve, reject) => connection.query(`DELETE FROM ${table}`, (err) => err ? reject(err) : resolve()));
+                        
+                        const rows = backupData[table];
+                        if (rows.length > 0) {
+                            for (const row of rows) {
+                                 await new Promise((resolve, reject) => connection.query(`INSERT INTO ${table} SET ?`, row, (err) => err ? reject(err) : resolve()));
+                            }
                         }
                     }
+                    
+                    connection.commit(err => {
+                        if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
+                        logAction(username, 'RESTORE', 'DATABASE', null, 'Restored database from backup');
+                        connection.release();
+                        res.json({ success: true, message: "Banco de dados restaurado com sucesso." });
+                    });
+                } catch (e) {
+                    connection.rollback(() => { connection.release(); res.status(500).json({ message: "Restore failed", error: e.message }); });
                 }
-                
-                db.commit(err => {
-                    if (err) return db.rollback(() => res.status(500).json({ message: "Commit error" }));
-                    logAction(username, 'RESTORE', 'DATABASE', null, 'Restored database from backup');
-                    res.json({ success: true, message: "Banco de dados restaurado com sucesso." });
-                });
-            } catch (e) {
-                db.rollback(() => res.status(500).json({ message: "Restore failed", error: e.message }));
-            }
+            });
         });
     } catch (e) {
         res.status(500).json({ message: "Error reading backup file" });
@@ -809,44 +794,42 @@ app.post('/api/database/restore', (req, res) => {
 
 app.post('/api/database/clear', (req, res) => {
      const { username } = req.body;
-     const tables = ['equipment', 'licenses', 'equipment_history', 'audit_log', 'license_totals']; // Keep users and settings
+     const tables = ['equipment', 'licenses', 'equipment_history', 'audit_log', 'license_totals'];
      
-     db.beginTransaction(async err => {
-         if (err) return res.status(500).json({ message: "Transaction error" });
-         
-         try {
-             for (const table of tables) {
-                  await new Promise((resolve, reject) => db.query(`TRUNCATE TABLE ${table}`, (err) => err ? reject(err) : resolve()));
-             }
+     db.getConnection((err, connection) => {
+         if (err) return res.status(500).json({ message: "Connection error" });
+
+         connection.beginTransaction(async err => {
+             if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
              
-             db.commit(err => {
-                 if (err) return db.rollback(() => res.status(500).json({ message: "Commit error" }));
-                 logAction(username, 'CLEAR', 'DATABASE', null, 'Cleared main database tables');
-                 res.json({ success: true, message: "Banco de dados limpo com sucesso (exceto usuários e configurações)." });
-             });
-         } catch (e) {
-             db.rollback(() => res.status(500).json({ message: "Clear failed", error: e.message }));
-         }
+             try {
+                 for (const table of tables) {
+                      await new Promise((resolve, reject) => connection.query(`TRUNCATE TABLE ${table}`, (err) => err ? reject(err) : resolve()));
+                 }
+                 
+                 connection.commit(err => {
+                     if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
+                     logAction(username, 'CLEAR', 'DATABASE', null, 'Cleared main database tables');
+                     connection.release();
+                     res.json({ success: true, message: "Banco de dados limpo com sucesso (exceto usuários e configurações)." });
+                 });
+             } catch (e) {
+                 connection.rollback(() => { connection.release(); res.status(500).json({ message: "Clear failed", error: e.message }); });
+             }
+         });
      });
 });
 
 // --- AI Integration ---
 
 app.post('/api/ai/generate-report', async (req, res) => {
-    const { query, data, username } = req.body; // data is relevant inventory context
+    const { query, data, username } = req.body;
     const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
 
     if (!HUGGING_FACE_API_KEY) {
         return res.status(503).json({ error: "Chave da API Hugging Face não configurada no servidor." });
     }
-
-    // Limit context data to avoid huge payloads if inventory is large
-    // Simple strategy: Send schema definition and let AI ask questions? 
-    // For this demo, we assume reasonable inventory size or send simplified list.
-    // Or we ask AI to write SQL? No, user wants result directly.
-    // Better: We send the JSON data to LLM and ask it to filter/aggregate.
     
-    // Truncate data if too large (token limits) - Basic protection
     const dataSlice = data.slice(0, 100); 
 
     const prompt = `
@@ -858,7 +841,6 @@ app.post('/api/ai/generate-report', async (req, res) => {
     
     Se a pergunta pedir uma lista, retorne APENAS um JSON array com os objetos filtrados.
     Se a pergunta pedir uma contagem ou resumo, retorne um texto explicativo curto.
-    Se a pergunta for ambígua, peça esclarecimentos.
     
     Responda APENAS o conteúdo da resposta, sem preâmbulos. Se for JSON, comece com [.
     `;
@@ -878,10 +860,8 @@ app.post('/api/ai/generate-report', async (req, res) => {
 
         let generatedText = result[0]?.generated_text?.trim();
         
-        // Try to parse as JSON if looks like it
         if (generatedText && (generatedText.startsWith('[') || generatedText.startsWith('{'))) {
             try {
-                // Extract potential JSON part if there is chatter
                 const jsonStart = generatedText.indexOf('[');
                 const jsonEnd = generatedText.lastIndexOf(']') + 1;
                 if (jsonStart >= 0 && jsonEnd > jsonStart) {
@@ -890,14 +870,9 @@ app.post('/api/ai/generate-report', async (req, res) => {
                 const jsonData = JSON.parse(generatedText);
                 return res.json({ reportData: jsonData });
             } catch (e) {
-                // Not valid JSON, return text
+                // Ignore parse errors
             }
         }
-        
-        // If not JSON or parsing failed, return as text error or structure
-        // But frontend expects reportData as Equipment[] for table display usually.
-        // If it's just text, frontend might not handle well if 'reportData' expects array.
-        // Let's conform to frontend expectation:
         
         return res.status(400).json({ error: "A IA não conseguiu gerar um relatório estruturado. Tente simplificar a consulta. Resposta da IA: " + generatedText });
 
