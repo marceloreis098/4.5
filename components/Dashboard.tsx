@@ -87,7 +87,7 @@ const Dashboard: React.FC<DashboardProps> = ({setActivePage, currentUser}) => {
       setSettings(settingsData);
     } catch (error: any) {
       console.error("Failed to fetch dashboard data:", error);
-      setError("Falha ao carregar dados do dashboard. Verifique a conexão com a API.");
+      setError(error.message || "Falha ao carregar dados do dashboard. Verifique a conexão com a API.");
     } finally {
       setLoading(false);
     }

@@ -31,7 +31,7 @@ db.getConnection((err, connection) => {
     } else {
         console.log('Connected to MariaDB database via Pool');
         connection.release();
-        runMigrations();
+        runMigrations(); // Run migrations after successful connection
     }
 });
 
@@ -81,28 +81,28 @@ const migrations = [
     { id: 32, query: "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS condicaoTermo VARCHAR(100) DEFAULT 'N/A'" },
 ];
 
-function runMigrations() {
-    db.query("CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY)", (err) => {
-        if (err) {
-            console.error("Error creating migrations table:", err);
-            return;
-        }
+// More robust, sequential migration runner
+async function runMigrations() {
+    try {
+        await db.promise().query("CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY)");
+        console.log("Migrations table checked/created.");
 
-        migrations.forEach(migration => {
-            db.query("SELECT id FROM migrations WHERE id = ?", [migration.id], (err, results) => {
-                if (!err && results.length === 0) {
-                    db.query(migration.query, (err) => {
-                        if (err) {
-                            console.error(`Migration ${migration.id} failed:`, err);
-                        } else {
-                            console.log(`Migration ${migration.id} applied.`);
-                            db.query("INSERT INTO migrations (id) VALUES (?)", [migration.id]);
-                        }
-                    });
+        for (const migration of migrations) {
+            const [rows] = await db.promise().query("SELECT id FROM migrations WHERE id = ?", [migration.id]);
+            if (rows.length === 0) {
+                try {
+                    await db.promise().query(migration.query);
+                    await db.promise().query("INSERT INTO migrations (id) VALUES (?)", [migration.id]);
+                    console.log(`Migration ${migration.id} applied successfully.`);
+                } catch (migrationError) {
+                    console.error(`Migration ${migration.id} failed:`, migrationError);
                 }
-            });
-        });
-    });
+            }
+        }
+        console.log("Migration check complete.");
+    } catch (err) {
+        console.error("Fatal error during migration setup:", err);
+    }
 }
 
 // --- Health Check Route ---

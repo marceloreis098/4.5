@@ -294,9 +294,11 @@ const LicenseControl: React.FC<LicenseControlProps> = ({ currentUser }) => {
                 alert(`Erro ao salvar alterações: ${result.message}`);
             }
     
-        } catch (error: any) {
+        } catch (error: unknown) {
+            // FIX: Handle 'unknown' type in catch block for type safety.
+            const message = error instanceof Error ? error.message : String(error);
             console.error("Failed to save product name changes:", error);
-            alert(`Erro ao salvar alterações: ${error.message}`);
+            alert(`Erro ao salvar alterações: ${message}`);
         } finally {
             // 5. Reload all data from server to ensure consistency
             loadLicensesAndProducts();

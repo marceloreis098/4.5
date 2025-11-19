@@ -531,6 +531,7 @@ interface EquipmentListProps {
 const EquipmentList: React.FC<EquipmentListProps> = ({ currentUser, companyName }) => {
     const [equipment, setEquipment] = useState<Equipment[]>([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [isFormModalOpen, setIsFormModalOpen] = useState(false);
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
@@ -549,6 +550,7 @@ const EquipmentList: React.FC<EquipmentListProps> = ({ currentUser, companyName 
 
     const loadData = async () => {
         setLoading(true);
+        setError(null);
         try {
             const [data, settingsData] = await Promise.all([
                 getEquipment(currentUser),
@@ -556,8 +558,9 @@ const EquipmentList: React.FC<EquipmentListProps> = ({ currentUser, companyName 
             ]);
             setEquipment(data);
             setSettings(settingsData);
-        } catch (error) {
+        } catch (error: any) {
             console.error("Failed to load data", error);
+            setError(error.message || "Falha ao carregar a lista de equipamentos.");
         } finally {
             setLoading(false);
         }
@@ -879,6 +882,19 @@ const EquipmentList: React.FC<EquipmentListProps> = ({ currentUser, companyName 
         );
     };
 
+
+    if (error) {
+        return (
+            <div className="bg-white dark:bg-dark-card p-4 sm:p-6 rounded-lg shadow-md text-center text-red-500">
+                <Icon name="TriangleAlert" size={32} className="mx-auto mb-2" />
+                <p className="font-semibold">Erro ao carregar dados</p>
+                <p className="text-sm">{error}</p>
+                 <button onClick={loadData} className="mt-4 bg-brand-primary text-white px-4 py-2 rounded hover:bg-blue-700">
+                    Tentar Novamente
+                </button>
+            </div>
+        );
+    }
 
     return (
         <div className="bg-white dark:bg-dark-card p-4 sm:p-6 rounded-lg shadow-md">
