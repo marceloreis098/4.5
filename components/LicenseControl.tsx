@@ -366,6 +366,7 @@ const LicenseControl: React.FC<LicenseControlProps> = ({ currentUser }) => {
             const wsSummary = XLSX.utils.json_to_sheet(summaryData);
             XLSX.utils.book_append_sheet(wb, wsSummary, "Resumo Geral");
 
+            // FIX: Cast the result of XLSX.write to string to resolve the 'unknown' type error.
             const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' }) as string;
             const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
             

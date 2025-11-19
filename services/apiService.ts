@@ -5,12 +5,26 @@ const handleResponse = async (response: Response) => {
     if (response.status === 204) {
         return;
     }
-    if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ message: `HTTP error! status: ${response.status}` }));
-        throw new Error(errorData.message || 'An unknown error occurred');
+    // For all other cases, try to parse JSON. If it fails for a non-204 response, it's an issue.
+    const text = await response.text();
+    try {
+        const data = JSON.parse(text);
+        if (!response.ok) {
+            throw new Error(data.message || 'An unknown error occurred');
+        }
+        return data;
+    } catch (e) {
+        // If JSON parsing fails but status is ok, it might be an issue.
+        // For this app, we expect JSON, so treat non-JSON as an error.
+        if (response.ok) {
+             console.error("Received non-JSON response for an OK status:", text);
+             throw new Error("Received an invalid response from the server.");
+        }
+        // If response was not ok and JSON parsing failed, use a generic error.
+        throw new Error(`HTTP error! status: ${response.status}`);
     }
-    return response.json();
 };
+
 
 const getApiBaseUrl = () => `http://${window.location.hostname}:3001/api`;
 
@@ -23,16 +37,27 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
     return handleResponse(response);
 };
 
-export const checkApiStatus = async (): Promise<{ ok: boolean, message?: string }> => {
+export const checkApiStatus = async (): Promise<{ ok: boolean, dbOk: boolean, message: string }> => {
     try {
-        const response = await fetch(getApiBaseUrl());
+        const response = await fetch(`${getApiBaseUrl()}/status`);
+        const data = await response.json();
+        
         if (!response.ok) {
-            throw new Error(`O servidor respondeu com o status: ${response.status}`);
+            return { 
+                ok: true, 
+                dbOk: false, 
+                message: data.message ? `O servidor da API está online, mas a conexão com o banco de dados falhou (Erro: ${data.error || 'desconhecido'}). Verifique as credenciais no arquivo .env da API.` : `HTTP error! status: ${response.status}`
+            };
         }
-        await response.json();
-        return { ok: true };
+        
+        return { ok: true, dbOk: true, message: data.message };
+
     } catch (error: any) {
-        return { ok: false, message: 'Falha ao conectar com a API. Verifique se o servidor backend (na porta 3001) está em execução e se o firewall permite a conexão.' };
+        return { 
+            ok: false, 
+            dbOk: false, 
+            message: 'Falha ao conectar com a API. Verifique se o servidor backend (na porta 3001) está em execução e se o firewall permite a conexão.' 
+        };
     }
 };
 

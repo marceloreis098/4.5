@@ -113,7 +113,7 @@ const Settings: React.FC<SettingsProps> = ({ currentUser }) => {
     });
     const [termoEntregaTemplate, setTermoEntregaTemplate] = useState('');
     const [termoDevolucaoTemplate, setTermoDevolucaoTemplate] = useState('');
-    const [apiStatus, setApiStatus] = useState<{ ok: boolean; message?: string } | null>(null);
+    const [apiStatus, setApiStatus] = useState<{ ok: boolean, dbOk: boolean, message: string } | null>(null);
     const [hasGeminiApiKey, setHasGeminiApiKey] = useState<boolean | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
@@ -392,10 +392,10 @@ const Settings: React.FC<SettingsProps> = ({ currentUser }) => {
                         </h3>
                         {apiStatus === null ? (
                             <p className="text-gray-500">Verificando status...</p>
-                        ) : apiStatus.ok ? (
+                        ) : apiStatus.ok && apiStatus.dbOk ? (
                             <div className="p-3 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded-md text-sm flex items-center gap-2">
                                 <Icon name="CheckCircle" size={18} />
-                                <span>Conexão com a API estabelecida com sucesso.</span>
+                                <span>{apiStatus.message}</span>
                             </div>
                         ) : (
                             <div className="p-3 bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300 rounded-md text-sm flex items-start gap-2">

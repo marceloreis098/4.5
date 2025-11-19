@@ -110,6 +110,22 @@ app.get('/api', (req, res) => {
     res.json({ status: 'ok', message: 'API is running' });
 });
 
+app.get('/api/status', (req, res) => {
+    db.getConnection((err, connection) => {
+        if (err) {
+            console.error('Database connection check failed:', err);
+            return res.status(500).json({ 
+                api: 'ok', 
+                db: 'error', 
+                message: 'Falha ao conectar ao banco de dados.',
+                error: err.code 
+            });
+        }
+        connection.release();
+        res.json({ api: 'ok', db: 'ok', message: 'Conexão com a API e banco de dados estabelecida com sucesso.' });
+    });
+});
+
 // --- AUTH Middleware & Routes ---
 
 app.post('/api/login', (req, res) => {
