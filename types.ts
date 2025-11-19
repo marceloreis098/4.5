@@ -65,6 +65,7 @@ export interface License {
     chaveSerial: string;
     dataExpiracao?: string;
     usuario: string;
+    empresa?: string; // Novo campo adicionado
     cargo?: string;
     setor?: string;
     gestor?: string;

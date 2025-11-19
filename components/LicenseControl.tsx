@@ -149,6 +149,7 @@ const LicenseFormModal: React.FC<{
         chaveSerial: '',
         dataExpiracao: '',
         usuario: '',
+        empresa: '',
         cargo: '',
         setor: '',
         gestor: '',
@@ -169,6 +170,7 @@ const LicenseFormModal: React.FC<{
                 chaveSerial: license.chaveSerial,
                 dataExpiracao: license.dataExpiracao || '',
                 usuario: license.usuario,
+                empresa: license.empresa || '',
                 cargo: license.cargo || '',
                 setor: license.setor || '',
                 gestor: license.gestor || '',
@@ -236,6 +238,9 @@ const LicenseFormModal: React.FC<{
                     <input type="text" name="chaveSerial" placeholder="Chave/Serial" value={formData.chaveSerial} onChange={handleChange} className="p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800" />
                     
                     <input type="text" name="usuario" placeholder="Usuário Atribuído" value={formData.usuario} onChange={handleChange} className="p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800" />
+                    
+                    <input type="text" name="empresa" placeholder="Empresa" value={formData.empresa} onChange={handleChange} className="p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800" />
+
                     <input type="text" name="cargo" placeholder="Cargo" value={formData.cargo} onChange={handleChange} className="p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800" />
 
                     <input type="text" name="setor" placeholder="Setor" value={formData.setor} onChange={handleChange} className="p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800" />
@@ -405,7 +410,7 @@ const LicenseControl: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     
             // 2. Process renames in the database for existing licenses
             const renamePromises = Object.entries(renames).map(([oldName, newName]) => 
-                renameProduct(oldName, newName, currentUser.username)
+                renameProduct(oldName as string, newName as string, currentUser.username)
             );
             if (renamePromises.length > 0) {
                 await Promise.all(renamePromises);
@@ -596,11 +601,80 @@ const LicenseControl: React.FC<{ currentUser: User }> = ({ currentUser }) => {
         </div>
     );
 
+    const handleExportToXlsx = async () => {
+        try {
+            if (Object.keys(groupedLicenses).length === 0) {
+                alert("Nenhum dado para exportar com os filtros atuais.");
+                return;
+            }
+    
+            await import('xlsx');
+            const XLSX = (window as any).XLSX;
+    
+            if (!XLSX || !XLSX.utils || typeof XLSX.utils.json_to_sheet !== 'function') {
+                console.error("A biblioteca XLSX não foi carregada corretamente.", { xlsxFromWindow: XLSX });
+                alert("Ocorreu um erro ao carregar a biblioteca de exportação.");
+                return;
+            }
+
+            const wb = XLSX.utils.book_new();
+            
+            // Mapeamento de cabeçalho
+            const headerMapping: { [K in keyof License]?: string } = {
+                produto: 'Produto', tipoLicenca: 'Tipo', chaveSerial: 'Serial/Chave',
+                dataExpiracao: 'Expiração', usuario: 'Usuário', empresa: 'Empresa', cargo: 'Cargo',
+                setor: 'Setor', gestor: 'Gestor', centroCusto: 'Centro de Custo',
+                contaRazao: 'Conta Razão', nomeComputador: 'Computador', numeroChamado: 'Chamado',
+                observacoes: 'Observações'
+            };
+            const dataKeys = Object.keys(headerMapping) as (keyof License)[];
+
+            // Iterar sobre cada grupo de produto e criar uma aba
+            Object.entries(groupedLicenses).sort().forEach(([productName, licenses]) => {
+                 const dataToExport = (licenses as License[]).map(item => {
+                    const row: { [key: string]: any } = {};
+                    dataKeys.forEach(key => {
+                        const header = headerMapping[key];
+                        if (header) {
+                            row[header] = item[key] ?? '';
+                        }
+                    });
+                    return row;
+                });
+
+                const ws = XLSX.utils.json_to_sheet(dataToExport);
+                // Excel sheet names limit is 31 chars and some special chars are invalid
+                const safeSheetName = productName.replace(/[\\/?*[\]]/g, '').substring(0, 30) || 'Sheet';
+                XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+            });
+
+            const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+            const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
+            const fileName = `relatorio_licencas_por_produto_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+            const a = document.createElement('a');
+            a.href = dataUri;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+        } catch (error) {
+            console.error("Erro ao exportar para XLSX:", error);
+            alert("Ocorreu um erro inesperado ao tentar exportar a planilha.");
+        }
+    };
+
     return (
          <div className="bg-white dark:bg-dark-card p-4 sm:p-6 rounded-lg shadow-md">
             <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-4 gap-4">
                 <h2 className="text-2xl font-bold text-brand-dark dark:text-dark-text-primary">Controle de Licenças</h2>
                 <div className="flex flex-wrap gap-2">
+                     {isAdmin && (
+                         <button onClick={handleExportToXlsx} className="bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 flex items-center gap-2">
+                            <Icon name="FileDown" size={18}/> Exportar Relatório (Excel)
+                        </button>
+                    )}
                     {isAdmin && (
                          <button onClick={() => setIsProductModalOpen(true)} className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 flex items-center gap-2">
                             <Icon name="List" size={18}/> Gerenciar Produtos
@@ -676,6 +750,7 @@ const LicenseControl: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                             <thead className="text-xs text-gray-800 dark:text-dark-text-primary uppercase bg-gray-100 dark:bg-gray-900/50">
                                                 <tr>
                                                     <th scope="col" className="px-6 py-3">Usuário</th>
+                                                    <th scope="col" className="px-6 py-3">Empresa</th>
                                                     <th scope="col" className="px-6 py-3">Chave/Serial</th>
                                                     <th scope="col" className="px-6 py-3">Expiração</th>
                                                     <th scope="col" className="px-6 py-3">Status</th>
@@ -686,6 +761,7 @@ const LicenseControl: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                                 {licensesInGroup.map(license => (
                                                     <tr key={license.id} className={`border-b dark:border-dark-border last:border-b-0 hover:bg-gray-50 dark:hover:bg-gray-700 ${license.approval_status === 'pending_approval' ? 'bg-yellow-50 dark:bg-yellow-900/20' : license.approval_status === 'rejected' ? 'bg-red-50 dark:bg-red-900/20 opacity-70' : 'bg-white dark:bg-dark-card'}`}>
                                                         <td className="px-6 py-4 font-medium text-gray-900 dark:text-dark-text-primary">{license.usuario}</td>
+                                                        <td className="px-6 py-4">{license.empresa || '-'}</td>
                                                         <td className="px-6 py-4 font-mono text-xs">{license.chaveSerial}</td>
                                                         <td className="px-6 py-4">
                                                             <ExpirationStatus dateStr={license.dataExpiracao}/>

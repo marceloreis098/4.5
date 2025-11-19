@@ -228,6 +228,9 @@ const runMigrations = async () => {
             },
             { // Migration 22: Ensure 'model' column exists
                 id: 22, sql: `ALTER TABLE equipment ADD COLUMN model VARCHAR(255) NULL;`
+            },
+            { // Migration 23: Add 'empresa' column to licenses
+                id: 23, sql: `ALTER TABLE licenses ADD COLUMN empresa VARCHAR(255) NULL;`
             }
         ];
         

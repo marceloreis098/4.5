@@ -40,7 +40,7 @@ const LicenseImport: React.FC<LicenseImportProps> = ({ currentUser, productNames
         const header = headerLine.split(';').map(h => h.trim().toLowerCase());
         const rows = lines.slice(1);
 
-        const expectedHeaders = ['produto', 'tipolicenca', 'chaveserial', 'dataexpiracao', 'usuario', 'cargo', 'setor', 'gestor', 'centrocusto', 'contarazao', 'nomecomputador', 'numerochamado'];
+        const expectedHeaders = ['produto', 'tipolicenca', 'chaveserial', 'dataexpiracao', 'usuario', 'empresa', 'cargo', 'setor', 'gestor', 'centrocusto', 'contarazao', 'nomecomputador', 'numerochamado'];
         
         if (!expectedHeaders.some(h => header.includes(h))) {
             throw new Error(`Cabeçalho do CSV inválido. Certifique-se que o delimitador é ponto e vírgula (;) e que as colunas esperadas estão presentes.`);
@@ -54,7 +54,7 @@ const LicenseImport: React.FC<LicenseImportProps> = ({ currentUser, productNames
             header.forEach((colName, index) => {
                 const keyMap: { [key: string]: keyof License } = {
                     'produto': 'produto', 'tipolicenca': 'tipoLicenca', 'chaveserial': 'chaveSerial',
-                    'dataexpiracao': 'dataExpiracao', 'usuario': 'usuario', 'cargo': 'cargo',
+                    'dataexpiracao': 'dataExpiracao', 'usuario': 'usuario', 'empresa': 'empresa', 'cargo': 'cargo',
                     'setor': 'setor', 'gestor': 'gestor', 'centrocusto': 'centroCusto',
                     'contarazao': 'contaRazao', 'nomecomputador': 'nomeComputador', 'numerochamado': 'numeroChamado'
                 };
