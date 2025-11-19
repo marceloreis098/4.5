@@ -1,3 +1,4 @@
+
 // types.ts
 
 export type Page = 'Dashboard' | 'Inventário de Equipamentos' | 'Controle de Licenças' | 'Usuários e Permissões' | 'Configurações' | 'Auditoria';
