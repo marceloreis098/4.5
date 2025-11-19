@@ -71,10 +71,12 @@ const Dashboard: React.FC<DashboardProps> = ({setActivePage, currentUser}) => {
   const [licenses, setLicenses] = useState<License[]>([]);
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
       setLoading(true);
+      setError(null);
       const [equipmentData, licensesData, settingsData] = await Promise.all([
         getEquipment(currentUser),
         getLicenses(currentUser),
@@ -83,8 +85,9 @@ const Dashboard: React.FC<DashboardProps> = ({setActivePage, currentUser}) => {
       setEquipment(equipmentData);
       setLicenses(licensesData);
       setSettings(settingsData);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch dashboard data:", error);
+      setError("Falha ao carregar dados do dashboard. Verifique a conexão com a API.");
     } finally {
       setLoading(false);
     }
@@ -148,6 +151,19 @@ const Dashboard: React.FC<DashboardProps> = ({setActivePage, currentUser}) => {
       <div className="flex justify-center items-center h-full">
         <Icon name="LoaderCircle" className="animate-spin text-brand-primary" size={48} />
       </div>
+    );
+  }
+
+  if (error) {
+    return (
+        <div className="flex flex-col justify-center items-center h-full text-red-600 dark:text-red-400">
+            <Icon name="TriangleAlert" size={48} className="mb-4" />
+            <h2 className="text-2xl font-bold mb-2">Erro ao carregar o Dashboard</h2>
+            <p>{error}</p>
+            <button onClick={fetchData} className="mt-4 bg-brand-primary text-white px-4 py-2 rounded hover:bg-blue-700">
+                Tentar Novamente
+            </button>
+        </div>
     );
   }
 

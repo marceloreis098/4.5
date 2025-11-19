@@ -257,10 +257,10 @@ const LicenseControl: React.FC<LicenseControlProps> = ({ currentUser }) => {
             }
     
             // 2. Process renames in the database for existing licenses
-            // FIX: Removed problematic cast and added explicit string casts for map and forEach arguments
-            const renamesEntries = Object.entries(renames);
+            // FIX: Explicitly cast Object.entries result to [string, string][] to avoid unknown type errors
+            const renamesEntries = Object.entries(renames) as [string, string][];
             const renamePromises = renamesEntries.map(([oldName, newName]) => 
-                renameProduct(oldName as string, newName as string, currentUser.username)
+                renameProduct(oldName, newName, currentUser.username)
             );
             if (renamePromises.length > 0) {
                 await Promise.all(renamePromises);
@@ -271,9 +271,7 @@ const LicenseControl: React.FC<LicenseControlProps> = ({ currentUser }) => {
             const oldTotalsWithRenamesHandled = { ...totalLicenses };
             
             // Apply renames to the old totals object before building the new one
-            renamesEntries.forEach(([key, value]) => {
-                const oldName = key as string;
-                const newName = value as string;
+            renamesEntries.forEach(([oldName, newName]) => {
                 if (oldTotalsWithRenamesHandled[oldName] !== undefined) {
                     oldTotalsWithRenamesHandled[newName] = oldTotalsWithRenamesHandled[oldName];
                     delete oldTotalsWithRenamesHandled[oldName];
