@@ -421,7 +421,9 @@ const LicenseControl: React.FC<{ currentUser: User }> = ({ currentUser }) => {
             const oldTotalsWithRenamesHandled = { ...totalLicenses };
             
             // Apply renames to the old totals object before building the new one
-            Object.entries(renames).forEach(([oldName, newName]) => {
+            Object.entries(renames).forEach(([key, value]) => {
+                const oldName = key as string;
+                const newName = value as string;
                 if (oldTotalsWithRenamesHandled[oldName] !== undefined) {
                     oldTotalsWithRenamesHandled[newName] = oldTotalsWithRenamesHandled[oldName];
                     delete oldTotalsWithRenamesHandled[oldName];
