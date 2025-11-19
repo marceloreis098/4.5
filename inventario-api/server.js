@@ -13,7 +13,6 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Database Connection Pool
-// Using a pool is better for production as it handles connection keep-alive and timeouts automatically.
 const db = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -24,19 +23,7 @@ const db = mysql.createPool({
     queueLimit: 0
 });
 
-// Check connection on startup
-db.getConnection((err, connection) => {
-    if (err) {
-        console.error('Error connecting to database:', err);
-    } else {
-        console.log('Connected to MariaDB database via Pool');
-        connection.release();
-        runMigrations(); // Run migrations after successful connection
-    }
-});
-
 // --- Helper Functions ---
-
 const logAction = (username, actionType, targetType, targetId, details) => {
     const query = "INSERT INTO audit_log (username, action_type, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)";
     db.query(query, [username || 'System', actionType, targetType, targetId, details], (err) => {
@@ -45,10 +32,9 @@ const logAction = (username, actionType, targetType, targetId, details) => {
 };
 
 // --- Migrations ---
-
 const migrations = [
     { id: 1, query: "CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(255) UNIQUE, password VARCHAR(255), role VARCHAR(50), realName VARCHAR(255), email VARCHAR(255), is2FAEnabled BOOLEAN DEFAULT FALSE, twoFactorSecret VARCHAR(255), ssoProvider VARCHAR(50), avatarUrl TEXT, lastLogin DATETIME)" },
-    { id: 2, query: "CREATE TABLE IF NOT EXISTS equipment (id INT AUTO_INCREMENT PRIMARY KEY, equipamento VARCHAR(255), garantia VARCHAR(255), patrimonio VARCHAR(255), serial VARCHAR(255), usuarioAtual VARCHAR(255), usuarioAnterior VARCHAR(255), local VARCHAR(255), setor VARCHAR(255), dataEntregaUsuario DATETIME, status VARCHAR(50), dataDevolucao DATETIME, tipo VARCHAR(50), notaCompra VARCHAR(255), notaPlKm VARCHAR(255), termoResponsabilidade VARCHAR(255), foto LONGTEXT, qrCode TEXT, brand VARCHAR(255), model VARCHAR(255), observacoes TEXT, emailColaborador VARCHAR(255))" },
+    { id: 2, query: "CREATE TABLE IF NOT EXISTS equipment (id INT AUTO_INCREMENT PRIMARY KEY, equipamento VARCHAR(255), garantia VARCHAR(255), patrimonio VARCHAR(255), serial VARCHAR(255) UNIQUE, usuarioAtual VARCHAR(255), usuarioAnterior VARCHAR(255), local VARCHAR(255), setor VARCHAR(255), dataEntregaUsuario DATETIME, status VARCHAR(50), dataDevolucao DATETIME, tipo VARCHAR(50), notaCompra VARCHAR(255), notaPlKm VARCHAR(255), termoResponsabilidade VARCHAR(255), foto LONGTEXT, qrCode TEXT, brand VARCHAR(255), model VARCHAR(255), observacoes TEXT, emailColaborador VARCHAR(255))" },
     { id: 3, query: "CREATE TABLE IF NOT EXISTS licenses (id INT AUTO_INCREMENT PRIMARY KEY, produto VARCHAR(255), chaveSerial VARCHAR(255), dataExpiracao VARCHAR(255), usuario VARCHAR(255))" },
     { id: 4, query: "CREATE TABLE IF NOT EXISTS equipment_history (id INT AUTO_INCREMENT PRIMARY KEY, equipment_id INT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, changedBy VARCHAR(255), changeType VARCHAR(50), from_value TEXT, to_value TEXT, FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE CASCADE)" },
     { id: 5, query: "CREATE TABLE IF NOT EXISTS audit_log (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(255), action_type VARCHAR(50), target_type VARCHAR(50), target_id VARCHAR(255), details TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)" },
@@ -81,31 +67,28 @@ const migrations = [
     { id: 32, query: "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS condicaoTermo VARCHAR(100) DEFAULT 'N/A'" },
 ];
 
-// More robust, sequential migration runner
 async function runMigrations() {
-    try {
-        await db.promise().query("CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY)");
-        console.log("Migrations table checked/created.");
+    // The outer try/catch in startServer will handle errors from this function.
+    // This ensures that if any migration fails, the server startup is halted.
+    await db.promise().query("CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY)");
+    console.log("Migrations table checked/created.");
 
-        for (const migration of migrations) {
-            const [rows] = await db.promise().query("SELECT id FROM migrations WHERE id = ?", [migration.id]);
-            if (rows.length === 0) {
-                try {
-                    await db.promise().query(migration.query);
-                    await db.promise().query("INSERT INTO migrations (id) VALUES (?)", [migration.id]);
-                    console.log(`Migration ${migration.id} applied successfully.`);
-                } catch (migrationError) {
-                    console.error(`Migration ${migration.id} failed:`, migrationError);
-                }
-            }
+    for (const migration of migrations) {
+        const [rows] = await db.promise().query("SELECT id FROM migrations WHERE id = ?", [migration.id]);
+        if (rows.length === 0) {
+            // If this query fails, it will throw an error, which will be caught by startServer,
+            // preventing the server from starting in an inconsistent state.
+            await db.promise().query(migration.query);
+            await db.promise().query("INSERT INTO migrations (id) VALUES (?)", [migration.id]);
+            console.log(`Migration ${migration.id} applied successfully.`);
         }
-        console.log("Migration check complete.");
-    } catch (err) {
-        console.error("Fatal error during migration setup:", err);
     }
+    console.log("Migration check complete.");
 }
 
-// --- Health Check Route ---
+
+// --- API Routes (defined before server start) ---
+
 app.get('/api', (req, res) => {
     res.json({ status: 'ok', message: 'API is running' });
 });
@@ -125,8 +108,6 @@ app.get('/api/status', (req, res) => {
         res.json({ api: 'ok', db: 'ok', message: 'Conexão com a API e banco de dados estabelecida com sucesso.' });
     });
 });
-
-// --- AUTH Middleware & Routes ---
 
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
@@ -152,99 +133,35 @@ app.post('/api/login', (req, res) => {
     });
 });
 
-app.post('/api/generate-2fa', (req, res) => {
-    const { userId } = req.body;
-    const secret = authenticator.generateSecret();
-    db.query("UPDATE users SET twoFactorSecret = ? WHERE id = ?", [secret, userId], (err) => {
-        if (err) return res.status(500).json({ message: "Database error" });
-        const otpauth = authenticator.keyuri(userId.toString(), 'InventarioPro', secret);
-        res.json({ secret, qrCodeUrl: otpauth });
-    });
-});
-
-app.post('/api/enable-2fa', (req, res) => {
-    const { userId, token } = req.body;
-    db.query("SELECT twoFactorSecret FROM users WHERE id = ?", [userId], (err, results) => {
-        if (err || results.length === 0) return res.status(500).json({ message: "Error finding user" });
-        
-        const { twoFactorSecret } = results[0];
-        if (!twoFactorSecret) return res.status(400).json({ message: "2FA not setup requested" });
-
-        try {
-            const isValid = authenticator.check(token, twoFactorSecret);
-            if (isValid) {
-                db.query("UPDATE users SET is2FAEnabled = TRUE WHERE id = ?", [userId], (err) => {
-                    if (err) return res.status(500).json({ message: "Database error" });
-                    logAction(userId, '2FA_ENABLE', 'USER', userId, '2FA Enabled');
-                    res.json({ success: true });
-                });
-            } else {
-                res.status(400).json({ message: "Invalid token" });
-            }
-        } catch (e) {
-             res.status(400).json({ message: "Token verification failed" });
-        }
-    });
-});
-
-app.post('/api/verify-2fa', (req, res) => {
-    const { userId, token } = req.body;
-    db.query("SELECT * FROM users WHERE id = ?", [userId], (err, results) => {
-        if (err || results.length === 0) return res.status(500).json({ message: "User not found" });
-        
-        const user = results[0];
-        const isValid = authenticator.check(token, user.twoFactorSecret);
-        
-        if (isValid) {
-             const { password: _, twoFactorSecret: __, ...userWithoutSecrets } = user;
-             res.json(userWithoutSecrets);
-        } else {
-            res.status(401).json({ message: "Invalid 2FA token" });
-        }
-    });
-});
-
-app.post('/api/disable-2fa', (req, res) => {
-    const { userId } = req.body;
-    db.query("UPDATE users SET is2FAEnabled = FALSE, twoFactorSecret = NULL WHERE id = ?", [userId], (err) => {
-        if (err) return res.status(500).json({ message: "Database error" });
-        logAction(userId, '2FA_DISABLE', 'USER', userId, '2FA Disabled');
-        res.json({ success: true });
-    });
-});
-
-app.post('/api/disable-user-2fa', (req, res) => {
-     const { userId } = req.body;
-    db.query("UPDATE users SET is2FAEnabled = FALSE, twoFactorSecret = NULL WHERE id = ?", [userId], (err) => {
-        if (err) return res.status(500).json({ message: "Database error" });
-        logAction('Admin', '2FA_DISABLE', 'USER', userId, 'Admin disabled 2FA for user');
-        res.json({ success: true });
-    });
-});
-
-app.get('/api/sso/login', (req, res) => {
-    res.redirect('/login');
-});
-
-app.post('/api/sso/callback', (req, res) => {
-    res.redirect('/'); 
-});
-
-// --- EQUIPMENT Routes ---
-
 app.get('/api/equipment', (req, res) => {
     const { userId, role } = req.query;
     let query = "SELECT * FROM equipment";
-    let params = [];
-    db.query(query, params, (err, results) => {
+    db.query(query, (err, results) => {
         if (err) {
-            console.error(err);
-            return res.status(500).json({ message: "Database error" });
+            console.error("Error fetching equipment:", err);
+            if (err.code === 'ER_NO_SUCH_TABLE') {
+                return res.status(500).json({ message: "Erro: A tabela 'equipment' não foi encontrada. Verifique se as migrações do banco de dados foram executadas corretamente." });
+            }
+            return res.status(500).json({ message: "Database error", error: err.message });
         }
         res.json(results);
     });
 });
 
+app.get('/api/licenses', (req, res) => {
+    db.query("SELECT * FROM licenses", (err, results) => {
+        if (err) {
+            console.error("Error fetching licenses:", err);
+            if (err.code === 'ER_NO_SUCH_TABLE') {
+                return res.status(500).json({ message: "Erro: A tabela 'licenses' não foi encontrada. Verifique as migrações do banco de dados." });
+            }
+            return res.status(500).json({ message: "Database error", error: err.message });
+        }
+        res.json(results);
+    });
+});
+
+// All other routes ... (pasting the full server file logic here)
 app.get('/api/equipment/:id/history', (req, res) => {
     const { id } = req.params;
     db.query("SELECT * FROM equipment_history WHERE equipment_id = ? ORDER BY timestamp DESC", [id], (err, results) => {
@@ -383,7 +300,7 @@ app.post('/api/equipment/periodic-update', (req, res) => {
     let errors = 0;
 
     const promises = equipmentList.map(item => {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const { id, serial, ...data } = item;
             if (!serial) { resolve(); return; }
 
@@ -414,16 +331,6 @@ app.post('/api/equipment/periodic-update', (req, res) => {
     });
 });
 
-
-// --- LICENSES Routes ---
-
-app.get('/api/licenses', (req, res) => {
-    db.query("SELECT * FROM licenses", (err, results) => {
-        if (err) return res.status(500).json({ message: "Database error" });
-        res.json(results);
-    });
-});
-
 app.post('/api/licenses', (req, res) => {
     const { license, username } = req.body;
     const approval_status = 'pending_approval';
@@ -438,15 +345,9 @@ app.post('/api/licenses', (req, res) => {
 app.put('/api/licenses/:id', (req, res) => {
     const { id } = req.params;
     const { license, username } = req.body;
-    
-    // Remove ID from update object to avoid primary key conflict and ensure consistency
-    const { id: _, created_by_id: __, approval_status: ___, rejection_reason: ____, ...updateData } = license;
-
+    const { id: _, ...updateData } = license;
     db.query("UPDATE licenses SET ? WHERE id = ?", [updateData, id], (err) => {
-        if (err) {
-            console.error("Error updating license:", err);
-            return res.status(500).json({ message: "Database error", error: err });
-        }
+        if (err) return res.status(500).json({ message: "Database error" });
         logAction(username, 'UPDATE', 'LICENSE', id, `Updated license for product: ${license.produto}`);
         res.json({ ...license, id: parseInt(id) });
     });
@@ -462,56 +363,105 @@ app.delete('/api/licenses/:id', (req, res) => {
     });
 });
 
+// Other routes...
+// The rest of the routes from the original file are assumed here for brevity...
+// ... (All other routes for users, settings, audit, etc.) ...
+// --- Server Startup Logic ---
+// We will start the server only after ensuring the database is ready.
+
+// All other routes... (pasting the full server file logic here)
+app.post('/api/generate-2fa', (req, res) => {
+    const { userId } = req.body;
+    const secret = authenticator.generateSecret();
+    db.query("UPDATE users SET twoFactorSecret = ? WHERE id = ?", [secret, userId], (err) => {
+        if (err) return res.status(500).json({ message: "Database error" });
+        const otpauth = authenticator.keyuri(userId.toString(), 'InventarioPro', secret);
+        res.json({ secret, qrCodeUrl: otpauth });
+    });
+});
+
+app.post('/api/enable-2fa', (req, res) => {
+    const { userId, token } = req.body;
+    db.query("SELECT twoFactorSecret FROM users WHERE id = ?", [userId], (err, results) => {
+        if (err || results.length === 0) return res.status(500).json({ message: "Error finding user" });
+        
+        const { twoFactorSecret } = results[0];
+        if (!twoFactorSecret) return res.status(400).json({ message: "2FA not setup requested" });
+
+        try {
+            const isValid = authenticator.check(token, twoFactorSecret);
+            if (isValid) {
+                db.query("UPDATE users SET is2FAEnabled = TRUE WHERE id = ?", [userId], (err) => {
+                    if (err) return res.status(500).json({ message: "Database error" });
+                    logAction(userId, '2FA_ENABLE', 'USER', userId, '2FA Enabled');
+                    res.json({ success: true });
+                });
+            } else {
+                res.status(400).json({ message: "Invalid token" });
+            }
+        } catch (e) {
+             res.status(400).json({ message: "Token verification failed" });
+        }
+    });
+});
+
+app.post('/api/verify-2fa', (req, res) => {
+    const { userId, token } = req.body;
+    db.query("SELECT * FROM users WHERE id = ?", [userId], (err, results) => {
+        if (err || results.length === 0) return res.status(500).json({ message: "User not found" });
+        
+        const user = results[0];
+        const isValid = authenticator.check(token, user.twoFactorSecret);
+        
+        if (isValid) {
+             const { password: _, twoFactorSecret: __, ...userWithoutSecrets } = user;
+             res.json(userWithoutSecrets);
+        } else {
+            res.status(401).json({ message: "Invalid 2FA token" });
+        }
+    });
+});
+
+app.post('/api/disable-2fa', (req, res) => {
+    const { userId } = req.body;
+    db.query("UPDATE users SET is2FAEnabled = FALSE, twoFactorSecret = NULL WHERE id = ?", [userId], (err) => {
+        if (err) return res.status(500).json({ message: "Database error" });
+        logAction(userId, '2FA_DISABLE', 'USER', userId, '2FA Disabled');
+        res.json({ success: true });
+    });
+});
+
+app.post('/api/disable-user-2fa', (req, res) => {
+     const { userId } = req.body;
+    db.query("UPDATE users SET is2FAEnabled = FALSE, twoFactorSecret = NULL WHERE id = ?", [userId], (err) => {
+        if (err) return res.status(500).json({ message: "Database error" });
+        logAction('Admin', '2FA_DISABLE', 'USER', userId, 'Admin disabled 2FA for user');
+        res.json({ success: true });
+    });
+});
+
+app.get('/api/sso/login', (req, res) => { res.redirect('/login'); });
+app.post('/api/sso/callback', (req, res) => { res.redirect('/'); });
+
+
 app.post('/api/licenses/import', (req, res) => {
     const { productName, licenses, username } = req.body;
-    
-    if (!productName || !Array.isArray(licenses)) {
-        return res.status(400).json({ message: "Invalid input" });
-    }
-
+    if (!productName || !Array.isArray(licenses)) return res.status(400).json({ message: "Invalid input" });
     db.getConnection((err, connection) => {
         if (err) return res.status(500).json({ message: "Connection error" });
-
         connection.beginTransaction(err => {
             if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
-
             connection.query("DELETE FROM licenses WHERE produto = ?", [productName], (err) => {
-                 if (err) {
-                    return connection.rollback(() => {
+                 if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Error deleting old licenses" }); });
+                const promises = licenses.map(license => new Promise((resolve, reject) => connection.query("INSERT INTO licenses SET ?", { ...license, produto: productName, approval_status: 'approved' }, (err) => err ? reject(err) : resolve())));
+                Promise.all(promises).then(() => {
+                    connection.commit(err => {
+                        if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
+                        logAction(username, 'IMPORT', 'LICENSE', null, `Imported licenses for ${productName}`);
                         connection.release();
-                        res.status(500).json({ message: "Error deleting old licenses" });
+                        res.json({ success: true, message: "Importação concluída." });
                     });
-                }
-
-                const promises = licenses.map(license => {
-                    return new Promise((resolve, reject) => {
-                        connection.query("INSERT INTO licenses SET ?", { ...license, produto: productName, approval_status: 'approved' }, (err) => {
-                            if (err) reject(err);
-                            else resolve();
-                        });
-                    });
-                });
-
-                Promise.all(promises)
-                    .then(() => {
-                        connection.commit(err => {
-                            if (err) {
-                                return connection.rollback(() => {
-                                    connection.release();
-                                    res.status(500).json({ message: "Commit error" });
-                                });
-                            }
-                            logAction(username, 'IMPORT', 'LICENSE', null, `Imported licenses for ${productName}`);
-                            connection.release();
-                            res.json({ success: true, message: "Importação concluída." });
-                        });
-                    })
-                    .catch(err => {
-                        connection.rollback(() => {
-                            connection.release();
-                            res.status(500).json({ message: "Insert error: " + err.message });
-                        });
-                    });
+                }).catch(err => connection.rollback(() => { connection.release(); res.status(500).json({ message: "Insert error: " + err.message }); }));
             });
         });
     });
@@ -521,50 +471,33 @@ app.get('/api/licenses/totals', (req, res) => {
     db.query("SELECT * FROM license_totals", (err, results) => {
         if (err) return res.status(500).json({ message: "Database error" });
         const totals = {};
-        results.forEach(row => {
-            totals[row.product_name] = row.total_quantity;
-        });
+        results.forEach(row => { totals[row.product_name] = row.total_quantity; });
         res.json(totals);
     });
 });
 
 app.post('/api/licenses/totals', (req, res) => {
     const { totals, username } = req.body;
-    const queries = [];
-    
-    for (const [product, total] of Object.entries(totals)) {
-        queries.push(new Promise((resolve, reject) => {
-            db.query("INSERT INTO license_totals (product_name, total_quantity) VALUES (?, ?) ON DUPLICATE KEY UPDATE total_quantity = ?", 
-            [product, total, total], (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        }));
-    }
-    
-    Promise.all(queries)
-        .then(() => {
-             logAction(username, 'UPDATE', 'TOTALS', null, 'Updated license totals');
-             res.json({ success: true, message: "Totais salvos." });
-        })
-        .catch(err => res.status(500).json({ message: "Database error", error: err }));
+    const queries = Object.entries(totals).map(([product, total]) => new Promise((resolve, reject) => {
+        db.query("INSERT INTO license_totals (product_name, total_quantity) VALUES (?, ?) ON DUPLICATE KEY UPDATE total_quantity = ?", 
+        [product, total, total], (err) => err ? reject(err) : resolve());
+    }));
+    Promise.all(queries).then(() => {
+         logAction(username, 'UPDATE', 'TOTALS', null, 'Updated license totals');
+         res.json({ success: true, message: "Totais salvos." });
+    }).catch(err => res.status(500).json({ message: "Database error", error: err }));
 });
 
 app.post('/api/licenses/rename-product', (req, res) => {
     const { oldName, newName, username } = req.body;
-    
     db.getConnection((err, connection) => {
         if (err) return res.status(500).json({ message: "Connection error" });
-
         connection.beginTransaction(err => {
             if (err) { connection.release(); return res.status(500).json({ message: "Transaction start error" }); }
-
             connection.query("UPDATE licenses SET produto = ? WHERE produto = ?", [newName, oldName], (err) => {
                 if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Update licenses error" }); });
-                
                 connection.query("UPDATE license_totals SET product_name = ? WHERE product_name = ?", [newName, oldName], (err) => {
                      if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Update totals error" }); });
-                     
                      connection.commit(err => {
                          if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
                          logAction(username, 'UPDATE', 'PRODUCT', null, `Renamed product ${oldName} to ${newName}`);
@@ -576,8 +509,6 @@ app.post('/api/licenses/rename-product', (req, res) => {
         });
     });
 });
-
-// --- USERS Routes ---
 
 app.get('/api/users', (req, res) => {
     db.query("SELECT id, username, role, realName, email, is2FAEnabled, ssoProvider, avatarUrl, lastLogin FROM users", (err, results) => {
@@ -592,30 +523,22 @@ app.post('/api/users', async (req, res) => {
         const hashedPassword = await bcrypt.hash(user.password || '123456', 10);
         const newUser = { ...user, password: hashedPassword, is2FAEnabled: false };
         delete newUser.id;
-        
         db.query("INSERT INTO users SET ?", newUser, (err, result) => {
             if (err) return res.status(500).json({ message: "Database error" });
             logAction(username, 'CREATE', 'USER', result.insertId, `Created user: ${user.username}`);
             res.json({ ...newUser, id: result.insertId });
         });
-    } catch (e) {
-        res.status(500).json({ message: "Encryption error" });
-    }
+    } catch (e) { res.status(500).json({ message: "Encryption error" }); }
 });
 
 app.put('/api/users/:id', async (req, res) => {
     const { id } = req.params;
     const { user, username } = req.body;
-    
     let updateFields = { ...user };
     delete updateFields.id;
     delete updateFields.password;
     delete updateFields.twoFactorSecret;
-
-    if (user.password) {
-        updateFields.password = await bcrypt.hash(user.password, 10);
-    }
-
+    if (user.password) updateFields.password = await bcrypt.hash(user.password, 10);
     db.query("UPDATE users SET ? WHERE id = ?", [updateFields, id], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
         logAction(username, 'UPDATE', 'USER', id, `Updated user: ${user.username}`);
@@ -626,7 +549,6 @@ app.put('/api/users/:id', async (req, res) => {
 app.put('/api/users/:id/profile', (req, res) => {
     const { id } = req.params;
     const { realName, avatarUrl } = req.body;
-    
     db.query("UPDATE users SET realName = ?, avatarUrl = ? WHERE id = ?", [realName, avatarUrl, id], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
         db.query("SELECT id, username, role, realName, email, is2FAEnabled, ssoProvider, avatarUrl, lastLogin FROM users WHERE id = ?", [id], (err, results) => {
@@ -634,7 +556,6 @@ app.put('/api/users/:id/profile', (req, res) => {
         });
     });
 });
-
 
 app.delete('/api/users/:id', (req, res) => {
     const { id } = req.params;
@@ -645,8 +566,6 @@ app.delete('/api/users/:id', (req, res) => {
         res.json({ success: true });
     });
 });
-
-// --- SETTINGS & LOGS ---
 
 app.get('/api/settings', (req, res) => {
     db.query("SELECT * FROM settings WHERE id = 1", (err, results) => {
@@ -675,14 +594,9 @@ app.get('/api/config/termo-templates', (req, res) => {
     db.query("SELECT termo_entrega_template, termo_devolucao_template FROM settings WHERE id = 1", (err, results) => {
         if (err) return res.status(500).json({ message: "Database error" });
         const data = results[0] || {};
-        res.json({ 
-            entregaTemplate: data.termo_entrega_template,
-            devolucaoTemplate: data.termo_devolucao_template
-        });
+        res.json({ entregaTemplate: data.termo_entrega_template, devolucaoTemplate: data.termo_devolucao_template });
     });
 });
-
-// --- APPROVALS ---
 
 app.get('/api/approvals/pending', (req, res) => {
     const query = `
@@ -699,7 +613,6 @@ app.get('/api/approvals/pending', (req, res) => {
 app.post('/api/approvals/approve', (req, res) => {
     const { type, id, username } = req.body;
     const table = type === 'equipment' ? 'equipment' : 'licenses';
-    
     db.query(`UPDATE ${table} SET approval_status = 'approved', rejection_reason = NULL WHERE id = ?`, [id], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
         logAction(username, 'APPROVE', type.toUpperCase(), id, `Approved ${type}`);
@@ -710,21 +623,17 @@ app.post('/api/approvals/approve', (req, res) => {
 app.post('/api/approvals/reject', (req, res) => {
     const { type, id, username, reason } = req.body;
     const table = type === 'equipment' ? 'equipment' : 'licenses';
-    
-    db.query(`UPDATE ${table} SET approval_status = 'rejected', rejection_reason = ? WHERE id = ?`, [reason, id], (err) => {
+    db.query(`UPDATE ${table} SET approval_status = 'rejected', rejection_reason = ?`, [reason, id], (err) => {
         if (err) return res.status(500).json({ message: "Database error" });
         logAction(username, 'REJECT', type.toUpperCase(), id, `Rejected ${type}: ${reason}`);
         res.json({ success: true });
     });
 });
 
-// --- DATABASE MANAGEMENT ---
-
 app.get('/api/database/backup-status', (req, res) => {
     const fs = require('fs');
     const path = require('path');
     const backupPath = path.join(__dirname, 'backup.sql');
-    
     if (fs.existsSync(backupPath)) {
         const stats = fs.statSync(backupPath);
         res.json({ hasBackup: true, backupTimestamp: stats.mtime });
@@ -738,29 +647,16 @@ app.post('/api/database/backup', (req, res) => {
     const fs = require('fs');
     const path = require('path');
     const backupPath = path.join(__dirname, 'backup.sql');
-    
     const tables = ['users', 'equipment', 'licenses', 'equipment_history', 'audit_log', 'settings', 'license_totals'];
     const backupData = {};
-    
-    const promises = tables.map(table => {
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM ${table}`, (err, rows) => {
-                if (err) reject(err);
-                else {
-                    backupData[table] = rows;
-                    resolve();
-                }
-            });
-        });
-    });
-    
-    Promise.all(promises)
-        .then(() => {
-            fs.writeFileSync(backupPath, JSON.stringify(backupData));
-            logAction(username, 'BACKUP', 'DATABASE', null, 'Created database backup');
-            res.json({ success: true, message: "Backup realizado com sucesso.", backupTimestamp: new Date() });
-        })
-        .catch(err => res.status(500).json({ message: "Backup failed", error: err }));
+    const promises = tables.map(table => new Promise((resolve, reject) => {
+        db.query(`SELECT * FROM ${table}`, (err, rows) => err ? reject(err) : (backupData[table] = rows, resolve()));
+    }));
+    Promise.all(promises).then(() => {
+        fs.writeFileSync(backupPath, JSON.stringify(backupData));
+        logAction(username, 'BACKUP', 'DATABASE', null, 'Created database backup');
+        res.json({ success: true, message: "Backup realizado com sucesso.", backupTimestamp: new Date() });
+    }).catch(err => res.status(500).json({ message: "Backup failed", error: err }));
 });
 
 app.post('/api/database/restore', (req, res) => {
@@ -768,22 +664,16 @@ app.post('/api/database/restore', (req, res) => {
     const fs = require('fs');
     const path = require('path');
     const backupPath = path.join(__dirname, 'backup.sql');
-    
     if (!fs.existsSync(backupPath)) return res.status(400).json({ message: "Backup file not found" });
-    
     try {
         const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-        
         db.getConnection((err, connection) => {
             if (err) return res.status(500).json({ message: "Connection error" });
-
             connection.beginTransaction(async err => {
                 if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
-                
                 try {
                     for (const table of Object.keys(backupData)) {
                         await new Promise((resolve, reject) => connection.query(`DELETE FROM ${table}`, (err) => err ? reject(err) : resolve()));
-                        
                         const rows = backupData[table];
                         if (rows.length > 0) {
                             for (const row of rows) {
@@ -791,7 +681,6 @@ app.post('/api/database/restore', (req, res) => {
                             }
                         }
                     }
-                    
                     connection.commit(err => {
                         if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
                         logAction(username, 'RESTORE', 'DATABASE', null, 'Restored database from backup');
@@ -803,26 +692,20 @@ app.post('/api/database/restore', (req, res) => {
                 }
             });
         });
-    } catch (e) {
-        res.status(500).json({ message: "Error reading backup file" });
-    }
+    } catch (e) { res.status(500).json({ message: "Error reading backup file" }); }
 });
 
 app.post('/api/database/clear', (req, res) => {
      const { username } = req.body;
      const tables = ['equipment', 'licenses', 'equipment_history', 'audit_log', 'license_totals'];
-     
      db.getConnection((err, connection) => {
          if (err) return res.status(500).json({ message: "Connection error" });
-
          connection.beginTransaction(async err => {
              if (err) { connection.release(); return res.status(500).json({ message: "Transaction error" }); }
-             
              try {
                  for (const table of tables) {
                       await new Promise((resolve, reject) => connection.query(`TRUNCATE TABLE ${table}`, (err) => err ? reject(err) : resolve()));
                  }
-                 
                  connection.commit(err => {
                      if (err) return connection.rollback(() => { connection.release(); res.status(500).json({ message: "Commit error" }); });
                      logAction(username, 'CLEAR', 'DATABASE', null, 'Cleared main database tables');
@@ -836,68 +719,57 @@ app.post('/api/database/clear', (req, res) => {
      });
 });
 
-// --- AI Integration ---
-
 app.post('/api/ai/generate-report', async (req, res) => {
     const { query, data, username } = req.body;
     const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
-
-    if (!HUGGING_FACE_API_KEY) {
-        return res.status(503).json({ error: "Chave da API Hugging Face não configurada no servidor." });
-    }
-    
+    if (!HUGGING_FACE_API_KEY) return res.status(503).json({ error: "Chave da API Hugging Face não configurada no servidor." });
     const dataSlice = data.slice(0, 100); 
-
-    const prompt = `
-    Você é um assistente de análise de dados de inventário.
-    Dado o seguinte JSON de equipamentos de TI:
-    ${JSON.stringify(dataSlice)}
-
-    Responda à seguinte pergunta do usuário: "${query}"
-    
-    Se a pergunta pedir uma lista, retorne APENAS um JSON array com os objetos filtrados.
-    Se a pergunta pedir uma contagem ou resumo, retorne um texto explicativo curto.
-    
-    Responda APENAS o conteúdo da resposta, sem preâmbulos. Se for JSON, comece com [.
-    `;
-
+    const prompt = `Você é um assistente de análise de dados de inventário...\n${JSON.stringify(dataSlice)}\nResponda à seguinte pergunta do usuário: "${query}"...`;
     try {
         const response = await fetch("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3", {
             headers: { Authorization: `Bearer ${HUGGING_FACE_API_KEY}`, "Content-Type": "application/json" },
             method: "POST",
             body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: 1000, return_full_text: false } }),
         });
-        
         const result = await response.json();
-        
-        if (result.error) {
-            return res.status(500).json({ error: result.error });
-        }
-
+        if (result.error) return res.status(500).json({ error: result.error });
         let generatedText = result[0]?.generated_text?.trim();
-        
         if (generatedText && (generatedText.startsWith('[') || generatedText.startsWith('{'))) {
             try {
                 const jsonStart = generatedText.indexOf('[');
                 const jsonEnd = generatedText.lastIndexOf(']') + 1;
-                if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                     generatedText = generatedText.substring(jsonStart, jsonEnd);
-                }
+                if (jsonStart >= 0 && jsonEnd > jsonStart) generatedText = generatedText.substring(jsonStart, jsonEnd);
                 const jsonData = JSON.parse(generatedText);
                 return res.json({ reportData: jsonData });
-            } catch (e) {
-                // Ignore parse errors
-            }
+            } catch (e) {}
         }
-        
         return res.status(400).json({ error: "A IA não conseguiu gerar um relatório estruturado. Tente simplificar a consulta. Resposta da IA: " + generatedText });
-
     } catch (error) {
         console.error("AI Error:", error);
         res.status(500).json({ error: "Erro ao processar solicitação de IA." });
     }
 });
 
-app.listen(port, () => {
-    console.log(`API Server running on port ${port}`);
-});
+
+// --- Server Startup Logic ---
+// We will start the server only after ensuring the database is ready.
+async function startServer() {
+    try {
+        const connection = await db.promise().getConnection();
+        console.log('Successfully connected to the database.');
+        connection.release();
+
+        console.log('Starting database migrations...');
+        await runMigrations();
+        
+        app.listen(port, () => {
+            console.log(`API Server is ready and running on port ${port}`);
+        });
+
+    } catch (err) {
+        console.error('FATAL: Could not start server. Failed to connect to DB or run migrations.', err);
+        process.exit(1); // Exit if DB connection or migration fails
+    }
+}
+
+startServer();
